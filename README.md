@@ -3,7 +3,7 @@ Automated candidate-free marker discovery as well as primer design and in silico
 testing using species specific genomic regions.
 ## Introduction
 Marker discovery often relies on prior knowledge of potential marker genes,
-Simple Sequence Repeats (SSR) or Single Nucleotide Polymorphisms (SNPS). Species
+Simple Sequence Repeats (SSR) or Single Nucleotide Polymorphisms (SNPs). Species
 specific genomic regions serve as ideal candidates for diagnostic markers. `dima`
 combines a multitude of bioinformatic tools to automate the workflow of diagnostic
 marker discovery from the discovery of unique genomic regions of the target
