@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET_GROUP="${1:-}"
+NEIDB_PATH="${2:-${HOME}/DBs/neidb}"
+
+if [[ -z "${TARGET_GROUP}" ]]; then
+  echo "Usage: $0 \"<target group>\" [path/to/neidb]"
+  exit 1
+fi
+
+sanitize() {
+  tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '_' | sed 's/^_*//; s/_*$//'
+}
+PREFIX="$(printf '%s' "${TARGET_GROUP}" | sanitize)"
+
+WORKDIR="$(pwd)"
+ACC_TXT="${WORKDIR}/${PREFIX}.accessions.txt"
+ACC_TSV="${WORKDIR}/${PREFIX}.accsIDs.tsv"
+TAXID_MAP="${WORKDIR}/${PREFIX}.taxid_map.txt"
+DB_FASTA="${WORKDIR}/${PREFIX}.fna"
+DB_TITLE="${PREFIX}Db"
+DB_PREFIX="${PREFIX}Db"
+
+TMPDIR="$(mktemp -d "${WORKDIR}/tmp_${PREFIX}_XXXXXX")"
+cleanup() { rm -rf "${TMPDIR}"; }
+trap cleanup EXIT
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
+for bin in taxi neighbors sqlite3 datasets unzip awk grep tr makeblastdb; do need "$bin"; done
+[[ -f "${NEIDB_PATH}" ]] || { echo "neidb not found at: ${NEIDB_PATH}" >&2; exit 1; }
+
+taxi "${TARGET_GROUP}" "${NEIDB_PATH}" \
+  | awk 'NR==2{print $1}' \
+  | neighbors -g "${NEIDB_PATH}" \
+  | awk '$1=="tt" {print $NF}' \
+  | tr '|' '\n' \
+  | sed '/^$/d' \
+  > "${ACC_TXT}"
+
+echo "  → wrote $(wc -l < "${ACC_TXT}") accessions to ${ACC_TXT}"
+
+while IFS= read -r accession; do
+  zipf="${TMPDIR}/${accession}.zip"
+  datasets download genome accession "${accession}" --filename "${zipf}" >/dev/null 2>&1
+  unzip -o "${zipf}" -d "${TMPDIR}/unz_${accession}" >/dev/null
+  fna_dir="${TMPDIR}/unz_${accession}/ncbi_dataset/data/${accession}"
+  if compgen -G "${fna_dir}/*.fna" > /dev/null; then
+    mv "${fna_dir}/"*.fna "${WORKDIR}/"
+  fi
+  rm -rf "${TMPDIR}/unz_${accession}" "${zipf}"
+done < "${ACC_TXT}"
+
+echo "  → current *.fna count: $(ls -1 *.fna 2>/dev/null | wc -l || true)"
+
+: > "${ACC_TSV}"
+while IFS= read -r a; do
+  sqlite3 "${NEIDB_PATH}" \
+    "select taxid,accession from genome where accession like '${a}'" \
+    | tr '|' '\t' >> "${ACC_TSV}"
+done < "${ACC_TXT}"
+
+sed -i '' -e '/^[[:space:]]*$/d' "${ACC_TSV}" 2>/dev/null || sed -i '/^[[:space:]]*$/d' "${ACC_TSV}"
+
+echo "  → wrote $(wc -l < "${ACC_TSV}") rows to ${ACC_TSV}"
+
+: > "${TAXID_MAP}"
+while IFS=$'\t' read -r tax acc; do
+  for f in *"${acc}"*.fna; do
+    [[ -e "$f" ]] || continue
+    grep -h "^>" "$f" \
+      | awk -v t="${tax}" '{
+            id=$1; sub(/^>/,"",id);
+            print id "\t" t
+         }' \
+      >> "${TAXID_MAP}"
+  done
+done < "${ACC_TSV}"
+
+sort -u -o "${TAXID_MAP}" "${TAXID_MAP}"
+echo "  → taxid_map lines: $(wc -l < "${TAXID_MAP}")"
+
+rm -f "${DB_FASTA}"
+shopt -s nullglob
+for fna in *.fna; do
+  cat "${fna}" >> "${DB_FASTA}"
+  rm -f "${fna}"
+done
+shopt -u nullglob
+
+if [[ ! -s "${DB_FASTA}" ]]; then
+  echo "ERROR: ${DB_FASTA} is empty; no FASTAs were found/concatenated." >&2
+  exit 1
+fi
+
+makeblastdb \
+  -in "${DB_FASTA}" \
+  -dbtype nucl \
+  -parse_seqids \
+  -taxid_map "${TAXID_MAP}" \
+  -title "${DB_TITLE}" \
+  -out "${DB_PREFIX}"
