@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# TARGET_GROUP="${1:-}"
+# NEIDB_PATH="${2:-${HOME}/DBs/neidb}"
+
 TARGET_GROUP="${1:-}"
 NEIDB_PATH="${2:-${HOME}/DBs/neidb}"
 
 if [[ -z "${TARGET_GROUP}" ]]; then
   echo "Usage: $0 \"<target group>\" [path/to/neidb]"
+  echo "Example $0 \"homo sapiens\" ~/neidb"
   exit 1
 fi
-
+echo "test1"
 sanitize() {
   tr '[:upper:]' '[:lower:]' | tr -cs '[:alnum:]' '_' | sed 's/^_*//; s/_*$//'
 }
@@ -27,19 +31,16 @@ cleanup() { rm -rf "${TMPDIR}"; }
 trap cleanup EXIT
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing dependency: $1" >&2; exit 1; }; }
-for bin in taxi neighbors sqlite3 datasets unzip awk grep tr makeblastdb; do need "$bin"; done
+for bin in taxi neighbors sqlite3 datasets makeblastdb; do need "$bin"; done
 [[ -f "${NEIDB_PATH}" ]] || { echo "neidb not found at: ${NEIDB_PATH}" >&2; exit 1; }
-
+echo "test2"
 taxi "${TARGET_GROUP}" "${NEIDB_PATH}" \
   | awk 'NR==2{print $1}' \
-  | neighbors -g "${NEIDB_PATH}" \
-  | awk '$1=="tt" {print $NF}' \
-  | tr '|' '\n' \
-  | sed '/^$/d' \
+  | neighbors -g -l "${NEIDB_PATH}" \
+  | awk '$1=="t" {print $2}' \
   > "${ACC_TXT}"
-
 echo "  → wrote $(wc -l < "${ACC_TXT}") accessions to ${ACC_TXT}"
-
+echo "test3"
 while IFS= read -r accession; do
   zipf="${TMPDIR}/${accession}.zip"
   datasets download genome accession "${accession}" --filename "${zipf}" >/dev/null 2>&1
@@ -50,7 +51,7 @@ while IFS= read -r accession; do
   fi
   rm -rf "${TMPDIR}/unz_${accession}" "${zipf}"
 done < "${ACC_TXT}"
-
+echo "test4"
 echo "  → current *.fna count: $(ls -1 *.fna 2>/dev/null | wc -l || true)"
 
 : > "${ACC_TSV}"

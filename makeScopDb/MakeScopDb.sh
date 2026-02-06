@@ -1,1 +1,0 @@
-/Users/lloyd/Thesis/noweb/makeScopDb/MakeScopDb.sh
