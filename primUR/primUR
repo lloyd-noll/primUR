@@ -1,0 +1,182 @@
+#!/bin/bash
+usage() {
+cat <<'USAGE'
+Usage:
+primUR -t <query.txt> -n <neidb_path> -d <scop_db_path> [options]
+
+Required:
+-t FILE   Query file (one target species per line)
+-n PATH   Genome database path for `taxi` and `neighbors`
+-d PATH   NCBI nt/SCOP database path for `scop`
+Options:
+-f        Feedback to terminal (quiet by default)
+-c        Run up to (and including) tree plotting, then stop
+-r        Resume after tree plotting (expects prior outputs)
+-h        Show this help
+
+Examples:
+primUR -t query.txt -n ~/DBs/neidb -d ~/DBs/nt
+primUR -f -c -t query.txt -n /data/neidb -d /data/nt
+USAGE
+}
+
+
+QUIET=true
+CHECK=false
+RESUME=false
+QUERY=""
+DB=""
+SCOPDB=""
+log() { $QUIET && return 0; printf '%s\n' "$*"; }
+need() { command -v "$1" >/dev/null 2>&1 || \
+{ echo "Missing dependency: $1" >&2; exit 1; }; }
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -t) QUERY="${2-}"; shift 2 ;;
+    -n) DB="${2-}";    shift 2 ;;
+    -d) SCOPDB="${2-}"; shift 2 ;;
+    -f) QUIET=false;   shift ;;
+    -c) CHECK=true;    shift ;;
+    -r) RESUME=true;   shift ;;
+    -h) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) echo "Unknown option: $1" >&2; usage; exit 1 ;;
+    *)  echo "Unexpected positional argument: $1" >&2; usage; \
+        exit 1 ;;
+  esac
+done
+if $CHECK && $RESUME; then
+  echo "Choose either -c or -r, not both." >&2
+  exit 1
+fi
+
+[[ -z "$QUERY"  ]]  && { echo "Error: -t <query.txt> \
+   is required." >&2; usage; exit 1; }
+[[ -z "$DB"     ]]  && { echo "Error: -n <neidb_path> \
+   is required." >&2; usage; exit 1; }
+[[ -z "$SCOPDB" ]]  && { echo "Error: -d <scop_db_path> \
+   is required." >&2; usage; exit 1; }
+
+[[ -r "$QUERY" ]] || { echo "Error: query file not readable: \
+   $QUERY" >&2; exit 1; }
+for cmd in taxi neighbors datasets unzip phylonium nj midRoot \
+                land plotTree sed awk tr sort head tail \
+                makeFurDb fur cleanSeq cres fa2prim \
+                primer3_core prim2tab scop; do
+  need "$cmd"
+done
+mkdir -p logs
+> logs/datasets.log
+> logs/phylonium.log
+> logs/fur.log
+{
+  echo "Start:"
+  date
+} > logs/timer.log
+log "$(cat logs/timer.log)"
+
+while read -r target; do
+  log "$target:"
+  safe_target="${target// /_}"
+  mkdir -p "$safe_target" "$safe_target/targets" \
+        "$safe_target/neighbors"
+  if ! $RESUME; then
+    taxon_id=$(taxi "$target" "$DB" | awk 'NR==2{print $1}')
+    echo "$taxon_id" >> "$safe_target/taxids.txt"
+    neigh_out="$(neighbors -g "$DB" <<< "$taxon_id")"
+    awk '$1=="t"||$1=="tt"{print $NF}' <<< "$neigh_out" |
+    tr '|' '\n' > "t_${safe_target}.txt"
+
+    awk '$1=="n"{print $NF}' <<< "$neigh_out" |
+    tr '|' '\n' > "n_${safe_target}.txt"
+
+    log "   taxi and neighbors complete"
+    for file in "t_${safe_target}.txt" "n_${safe_target}.txt"; do
+      case "$file" in
+        t_*) output_dir="$safe_target/targets";   prefix="t_";;
+        n_*) output_dir="$safe_target/neighbors"; prefix="n_";;
+      esac
+      while read -r accession; do
+        printf "Downloading: $accession" >> logs/datasets.log
+        datasets download genome accession "$accession" \
+          --filename "${accession}.zip" >> logs/datasets.log 2>&1
+        unzip -o "${accession}.zip" -d tmp_unzip \
+              >> logs/datasets.log 2>&1
+        for fna_file in tmp_unzip/ncbi_dataset/data/"$accession"/*.fna; do
+          base=$(basename "$fna_file")
+          mv "$fna_file" "$output_dir/${prefix}${base}"
+        done
+        rm -rf tmp_unzip
+        rm "${accession}.zip"
+      done < "$file"
+    done
+    log "   All genome downloads complete"
+  else
+    log "--resume set; starting at marker discovery for $target"
+  fi
+
+
+  if ! $RESUME; then
+      phylonium "$safe_target"/targets/* "$safe_target"/neighbors/* \
+                > "$safe_target/tree.dist" 2>> logs/phylonium.log
+      nj "$safe_target/tree.dist" |
+            midRoot |
+            land > "$safe_target/tree.nwk" 2>> logs/phylonium.log
+      sed "s/'/''/g" "$safe_target/tree.nwk" | 
+          sed -E "s/(GC[AF]_[0-9]+\.[0-9]+)[^']*/\1/g" \
+              > "$safe_target/tree_clean.nwk"
+      plotTree "$safe_target/tree_clean.nwk" \
+            2>> logs/phylonium.log
+
+            log "   Tree construction complete"
+
+      $CHECK && { log "--check set; stopping after tree plotting for $target";
+          continue; }
+  fi
+
+    makeFurDb -t "$safe_target/targets" \
+            -n "$safe_target/neighbors" \
+            -d "$safe_target/max.db" 2>logs/makeFurDb.log
+  fur -d "$safe_target/max.db" 2>logs/fur.log |
+    cleanSeq > "$safe_target/max.fasta"
+  echo "$safe_target" >> logs/fur.log
+    cres "$safe_target/max.fasta" >> logs/fur.log
+    echo >> logs/fur.log
+
+    log "   fur analysis completed"
+
+  log "   Running primer3"
+  count=$(
+    fa2prim "$safe_target/max.fasta" |
+        primer3_core |
+        prim2tab |
+        tail -n +2 |
+        sort -n |
+        awk -v out="$safe_target/primers.fasta" '
+      $1<=1 {
+        printf(">f penalty: %s\n%s\n>r\n%s\n\n", $1,$2,$3) >> out
+        n++
+      }
+      END { print n+0 }'
+    )
+  log "   Primer pairs with penalty <= 1: $count"
+    log "   primers.fasta created"
+  head -n 4 $safe_target/primers.fasta \
+       > $safe_target/best_primers.fasta
+      log "   Best scoring primer pair saved to best_primers.fasta"
+  log "   In silico testing best primer pair"
+  scop -d "$SCOPDB" \
+       -t "$safe_target/taxids.txt" "$safe_target/best_primers.fasta" \
+      > "$safe_target/scop.out"
+
+  log "Finished run for $safe_target
+    "
+done < "$QUERY"
+
+{
+echo
+echo "End:"
+date
+} >> logs/timer.log
+log "$(tail -n 2 logs/timer.log)"
+log "Pipeline complete."
