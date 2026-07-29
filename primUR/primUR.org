@@ -1,0 +1,706 @@
+#+begin_export latex
+\section*{Introduction}
+	exttt{primUR} is a pipeline for the automated discovery of taxon-specific
+diagnostic PCR primers. Given a list of target organisms, it identifies
+unique genomic regions (URs) absent from related neighbor genomes,
+designs primers against those regions, and tests their \emph{in silico}
+specificity. The pipeline integrates six steps:
+\begin{enumerate}
+\item Taxon lookup and neighbor discovery via 	exttt{taxi} and 	exttt{neighbors}
+\item Genome download via the NCBI 	exttt{datasets} CLI
+\item Phylogenetic tree construction via 	exttt{phylonium}, 	exttt{nj},
+  	exttt{midRoot}, 	exttt{land}, and 	exttt{plotTree}
+\item Unique region discovery via 	exttt{makeFurDb}, 	exttt{fur}, and 	exttt{cleanSeq}
+\item Primer design via 	exttt{fa2prim}, 	exttt{primer3\_core}, and 	exttt{prim2tab}
+\item \emph{In silico} specificity testing via 	exttt{scop}
+\end{enumerate}
+
+The program is invoked as
+\begin{verbatim}
+$ primUR -t query.txt -n neidb -d scopdb [options]
+\end{verbatim}
+where \texttt{query.txt} contains one target species per line, \texttt{neidb}
+is the path to the neighbor genome database, and \texttt{scopdb} is the
+path to a BLAST nucleotide database for specificity testing.
+
+\section*{Installation}
+Build the binary with
+\begin{verbatim}
+$ make
+\end{verbatim}
+then install it to \texttt{\textasciitilde/go/bin} with
+\begin{verbatim}
+$ make install-bin
+\end{verbatim}
+Make sure \texttt{\textasciitilde/go/bin} is in your \texttt{PATH}. If not,
+add the following line to your \texttt{\textasciitilde/.zshrc} or
+\texttt{\textasciitilde/.bashrc}:
+\begin{verbatim}
+export PATH=$PATH:~/go/bin
+\end{verbatim}
+Then reload your shell:
+\begin{verbatim}
+$ source ~/.zshrc
+\end{verbatim}
+
+\section*{Implementation}
+The outline of 	exttt{primUR} contains hooks for imports, types, variables,
+functions, and the logic of the main function.
+\subsection*{Program: 	exttt{primUR}}
+#+end_export
+#+begin_src go <<primUR.go>>=
+  package main
+  import (
+    //<<Imports, Pr. 
+ef{pr:pri}>>
+  )
+  //<<Types, Pr. 
+ef{pr:pri}>>
+  //<<Variables, Pr. 
+ef{pr:pri}>>
+  //<<Functions, Pr. 
+ef{pr:pri}>>
+  func main() {
+    //<<Main function, Pr. 
+ef{pr:pri}>>
+  }
+#+end_src
+#+begin_export latex
+
+In the main function we parse arguments, check dependencies, read the
+query file, set up the log directory, and then run the pipeline for
+each target species.
+#+end_export
+#+begin_src go <<Main function, Pr. 
+ef{pr:pri}>>=
+  cfg := parseArgs()
+  if err := checkDependencies(requiredTools); err != nil {
+    log.Fatal(err)
+  }
+  targets, err := readLines(cfg.queryFile)
+  if err != nil {
+    log.Fatalf("Could not read query file: %v", err)
+  }
+  if err := setupLogDir(); err != nil {
+    log.Fatalf("Could not create log directory: %v", err)
+  }
+  for _, target := range targets {
+    if err := processTarget(target, cfg); err != nil {
+      log.Printf("Error processing %q: %v", target, err)
+    }
+  }
+#+end_src
+#+begin_export latex
+The imports cover standard library packages for buffered I/O, command
+line flag parsing, formatted output, logging, file system access,
+external process execution, path manipulation, regular expressions,
+and string handling.
+#+end_export
+#+begin_src go <<Imports, Pr. 
+ef{pr:pri}>>=
+  "bufio"
+  "flag"
+  "fmt"
+  "log"
+  "os"
+  "os/exec"
+  "path/filepath"
+  "regexp"
+  "strings"
+#+end_src
+#+begin_export latex
+\section*{Types and Variables}
+The 	exttt{config} struct holds all values parsed from the command line.
+#+end_export
+#+begin_src go <<Types, Pr. 
+ef{pr:pri}>>=
+  type config struct {
+    queryFile string
+    neiDB     string
+    scopDB    string
+    verbose   bool
+    checkOnly bool
+    resume    bool
+  }
+#+end_src
+#+begin_export latex
+The variable 	exttt{requiredTools} lists all external binaries that must
+be present in 	exttt{PATH} before the pipeline starts.
+#+end_export
+#+begin_src go <<Variables, Pr. 
+ef{pr:pri}>>=
+  var requiredTools = []string{
+    "taxi", "neighbors", "datasets", "unzip",
+    "phylonium", "nj", "midRoot", "land", "plotTree",
+    "makeFurDb", "fur", "cleanSeq", "cres", "fa2prim",
+    "primer3_core", "prim2tab", "scop",
+  }
+#+end_src
+#+begin_export latex
+\section*{Helper Functions}
+We define four helper functions used throughout the pipeline.
+	exttt{parseArgs} defines and parses the command line options.
+#+end_export
+#+begin_src go <<Functions, Pr. 
+ef{pr:pri}>>=
+  func parseArgs() config {
+    //<<Parse arguments, Pr. 
+ef{pr:pri}>>
+  }
+  //<<Helper functions, Pr. 
+ef{pr:pri}>>
+  //<<Pipeline function, Pr. 
+ef{pr:pri}>>
+#+end_src
+#+begin_export latex
+The three required flags are 	exttt{-t} for the query file, 	exttt{-n} for
+the neighbor database, and 	exttt{-d} for the SCOP database. The optional
+flags 	exttt{-f}, 	exttt{-c}, and 	exttt{-r} control verbosity, early stopping,
+and resuming after tree construction, respectively. The flags 	exttt{-c}
+and 	exttt{-r} are mutually exclusive.
+#+end_export
+#+begin_src go <<Parse arguments, Pr. 
+ef{pr:pri}>>=
+  var cfg config
+  flag.StringVar(&cfg.queryFile, "t", "", "Query file (one target species per line) [required]")
+  flag.StringVar(&cfg.neiDB, "n", "", "Genome database path for taxi and neighbors [required]")
+  flag.StringVar(&cfg.scopDB, "d", "", "NCBI nt/SCOP database path for scop [required]")
+  flag.BoolVar(&cfg.verbose, "f", false, "Feedback to terminal (quiet by default)")
+  flag.BoolVar(&cfg.checkOnly, "c", false, "Run up to (and including) tree plotting, then stop")
+  flag.BoolVar(&cfg.resume, "r", false, "Resume after tree plotting (expects prior outputs)")
+  flag.Usage = func() {
+    fmt.Fprintf(os.Stderr, "Usage:
+" +
+      "  primUR -t <query.txt> -n <neidb_path> -d <scop_db_path> [options]
+
+" +
+      "Options:
+")
+    flag.PrintDefaults()
+  }
+  flag.Parse()
+  if cfg.checkOnly && cfg.resume {
+    fmt.Fprintln(os.Stderr, "Error: choose either -c or -r, not both.")
+    os.Exit(1)
+  }
+  if cfg.queryFile == "" || cfg.neiDB == "" || cfg.scopDB == "" {
+    fmt.Fprintln(os.Stderr, "Error: -t, -n, and -d are all required.")
+    flag.Usage()
+    os.Exit(1)
+  }
+  return cfg
+#+end_src
+#+begin_export latex
+	exttt{checkDependencies} verifies that all required tools are available
+in 	exttt{PATH} using 	exttt{exec.LookPath}, which is the Go equivalent of
+the shell's 	exttt{command -v}.
+#+end_export
+#+begin_src go <<Helper functions, Pr. 
+ef{pr:pri}>>=
+  func checkDependencies(tools []string) error {
+    var missing []string
+    for _, tool := range tools {
+      if _, err := exec.LookPath(tool); err != nil {
+        missing = append(missing, tool)
+      }
+    }
+    if len(missing) > 0 {
+      return fmt.Errorf("missing dependencies: %s",
+        strings.Join(missing, ", "))
+    }
+    return nil
+  }
+#+end_src
+#+begin_export latex
+	exttt{readLines} opens a file and returns its non-empty lines as a
+slice of strings, using a 	exttt{bufio.Scanner} for efficient line-by-line
+reading.
+#+end_export
+#+begin_src go <<Helper functions, Pr. 
+ef{pr:pri}>>=
+  func readLines(path string) ([]string, error) {
+    f, err := os.Open(path)
+    if err != nil {
+      return nil, err
+    }
+    defer f.Close()
+    var lines []string
+    scanner := bufio.NewScanner(f)
+    for scanner.Scan() {
+      line := strings.TrimSpace(scanner.Text())
+      if line != "" {
+        lines = append(lines, line)
+      }
+    }
+    return lines, scanner.Err()
+  }
+#+end_src
+#+begin_export latex
+	exttt{setupLogDir} creates the 	exttt{logs/} directory and initialises
+empty log files for each pipeline step.
+#+end_export
+#+begin_src go <<Helper functions, Pr. 
+ef{pr:pri}>>=
+  func setupLogDir() error {
+    err := os.MkdirAll("logs", 0755)
+    if err != nil {
+      return err
+    }
+    for _, name := range []string{
+      "logs/datasets.log",
+      "logs/phylonium.log",
+      "logs/fur.log",
+      "logs/timer.log",
+    } {
+      f, err := os.Create(name)
+      if err != nil {
+        return err
+      }
+      f.Close()
+    }
+    return nil
+  }
+#+end_src
+#+begin_export latex
+	exttt{safeTarget} replaces spaces with underscores in a taxon name to
+produce a valid directory name, mirroring the Bash substitution
+verb|${target// /_}|. 	exttt{logMsg} prints a message to standard output
+only when verbose mode is active. 	exttt{runCmd} executes an external
+command and returns its standard output as a string. An optional
+	exttt{stdin} string is passed to the process if non-empty, enabling
+pipeline chaining without temporary files.
+#+end_export
+#+begin_src go <<Helper functions, Pr. 
+ef{pr:pri}>>=
+  func safeTarget(name string) string {
+    return strings.ReplaceAll(name, " ", "_")
+  }
+  func logMsg(cfg config, msg string) {
+    if cfg.verbose {
+      fmt.Println(msg)
+    }
+  }
+  func runCmd(stdin string, name string, args ...string) (string, error) {
+    cmd := exec.Command(name, args...)
+    if stdin != "" {
+      cmd.Stdin = strings.NewReader(stdin)
+    }
+    var stdout, stderr strings.Builder
+    cmd.Stdout = &stdout
+    cmd.Stderr = &stderr
+    err := cmd.Run()
+    if err != nil {
+      return "", fmt.Errorf("%s failed: %w
+Output: %s",
+        name, err, stderr.String())
+    }
+    return stdout.String(), nil
+  }
+#+end_src
+#+begin_export latex
+\section*{Pipeline}
+The function 	exttt{processTarget} runs the full six-step pipeline for a
+single target species. Output files are organised under a directory
+named after the target, with spaces replaced by underscores:
+\begin{verbatim}
+<target>/
+  taxids.txt
+  fur/        taccs.txt  naccs.txt  URs.fasta  summary.txt  fur.db
+  genomes/    targets/   neighbors/
+  primers/    primers.fasta  best_primers.fasta  scop.out
+  phylogeny/  tree.dist  tree.nwk  tree_clean.nwk
+\end{verbatim}
+#+end_export
+#+begin_src go <<Pipeline function, Pr. 
+ef{pr:pri}>>=
+  func processTarget(target string, cfg config) error {
+    safe := safeTarget(target)
+    logMsg(cfg, target+":")
+    //<<Create directories, Pr. 
+ef{pr:pri}>>
+    if !cfg.resume {
+      //<<Step 1: Taxon lookup and neighbor discovery, Pr. 
+ef{pr:pri}>>
+      //<<Step 2: Genome download, Pr. 
+ef{pr:pri}>>
+      //<<Step 3: Phylogenetic tree, Pr. 
+ef{pr:pri}>>
+    } else {
+      logMsg(cfg, "  --resume set; starting at marker discovery for "+target)
+    }
+    if cfg.checkOnly {
+      logMsg(cfg, "  --check set; stopping after tree plotting for "+target)
+      return nil
+    }
+    //<<Step 4: FUR marker discovery, Pr. 
+ef{pr:pri}>>
+    //<<Step 5: Primer design, Pr. 
+ef{pr:pri}>>
+    //<<Step 6: In silico specificity test, Pr. 
+ef{pr:pri}>>
+    logMsg(cfg, "Finished run for "+safe+"
+")
+    return nil
+  }
+#+end_src
+#+begin_export latex
+All output directories are created upfront with 	exttt{os.MkdirAll},
+which creates parent directories as needed.
+#+end_export
+#+begin_src go <<Create directories, Pr. 
+ef{pr:pri}>>=
+  for _, dir := range []string{
+    safe + "/fur",
+    safe + "/genomes/targets",
+    safe + "/genomes/neighbors",
+    safe + "/primers",
+    safe + "/phylogeny",
+  } {
+    if err := os.MkdirAll(dir, 0755); err != nil {
+      return err
+    }
+  }
+#+end_src
+#+begin_export latex
+\subsection*{Step 1: Taxon Lookup and Neighbor Discovery}
+We call 	exttt{taxi} to resolve the target species name to a taxon ID,
+then pass that ID to 	exttt{neighbors} to find related genome accessions.
+The taxon ID is written to 	exttt{taxids.txt} for later use by 	exttt{scop}.
+Target and neighbor accessions are written to 	exttt{fur/taccs.txt} and
+	exttt{fur/naccs.txt} respectively.
+#+end_export
+#+begin_src go <<Step 1: Taxon lookup and neighbor discovery, Pr. 
+ef{pr:pri}>>=
+  taxiOut, err := runCmd("", "taxi", target, cfg.neiDB)
+  if err != nil {
+    return err
+  }
+  lines := strings.Split(taxiOut, "
+")
+  fields := strings.Fields(lines[1])
+  taxonID := fields[0]
+  err = os.WriteFile(safe+"/taxids.txt", []byte(taxonID+"
+"), 0644)
+  if err != nil {
+    return err
+  }
+  neighOut, err := runCmd("", "neighbors", "-g", "-l", "-t", taxonID, cfg.neiDB)
+  if err != nil {
+    return err
+  }
+  var targets, neighbors []string
+  for _, line := range strings.Split(neighOut, "
+") {
+    fields := strings.Fields(line)
+    if len(fields) < 2 {
+      continue
+    }
+    switch fields[0] {
+    case "t":
+      targets = append(targets, fields[1])
+    case "n":
+      neighbors = append(neighbors, fields[1])
+    }
+  }
+  err = os.WriteFile(safe+"/fur/taccs.txt",
+    []byte(strings.Join(targets, "
+")+"
+"), 0644)
+  if err != nil {
+    return err
+  }
+  err = os.WriteFile(safe+"/fur/naccs.txt",
+    []byte(strings.Join(neighbors, "
+")+"
+"), 0644)
+  if err != nil {
+    return err
+  }
+  logMsg(cfg, "  taxi and neighbors complete")
+#+end_src
+#+begin_export latex
+\subsection*{Step 2: Genome Download}
+For each accession, we download a ZIP archive from NCBI using
+	exttt{datasets}, unzip it into a temporary directory, move the
+	exttt{.fna} file to the appropriate genomes subfolder with a prefix
+(	exttt{t\_} for targets, 	exttt{n\_} for neighbors), and delete the ZIP.
+The temporary directory is removed after each loop.
+#+end_export
+#+begin_src go <<Step 2: Genome download, Pr. 
+ef{pr:pri}>>=
+  err = os.MkdirAll(safe+"/genomes/targets/tmp_unzip", 0755)
+  if err != nil {
+    return err
+  }
+  err = os.MkdirAll(safe+"/genomes/neighbors/tmp_unzip", 0755)
+  if err != nil {
+    return err
+  }
+  for _, taccs := range targets {
+    _, err := runCmd("", "datasets", "download", "genome",
+      "accession", taccs,
+      "--filename", safe+"/genomes/targets/"+taccs+".zip")
+    if err != nil {
+      return err
+    }
+    logMsg(cfg, "  Downloaded: "+taccs)
+    _, err = runCmd("", "unzip", "-o",
+      safe+"/genomes/targets/"+taccs+".zip",
+      "-d", safe+"/genomes/targets/tmp_unzip")
+    if err != nil {
+      return err
+    }
+    os.Remove(safe + "/genomes/targets/" + taccs + ".zip")
+    filepath.Walk(safe+"/genomes/targets/tmp_unzip",
+      func(path string, info os.FileInfo, err error) error {
+        if filepath.Ext(path) == ".fna" {
+          dest := safe + "/genomes/targets/t_" + filepath.Base(path)
+          return os.Rename(path, dest)
+        }
+        return nil
+      })
+  }
+  os.RemoveAll(safe + "/genomes/targets/tmp_unzip")
+  for _, naccs := range neighbors {
+    _, err := runCmd("", "datasets", "download", "genome",
+      "accession", naccs,
+      "--filename", safe+"/genomes/neighbors/"+naccs+".zip")
+    if err != nil {
+      return err
+    }
+    logMsg(cfg, "  Downloaded: "+naccs)
+    _, err = runCmd("", "unzip", "-o",
+      safe+"/genomes/neighbors/"+naccs+".zip",
+      "-d", safe+"/genomes/neighbors/tmp_unzip")
+    if err != nil {
+      return err
+    }
+    os.Remove(safe + "/genomes/neighbors/" + naccs + ".zip")
+    filepath.Walk(safe+"/genomes/neighbors/tmp_unzip",
+      func(path string, info os.FileInfo, err error) error {
+        if filepath.Ext(path) == ".fna" {
+          dest := safe + "/genomes/neighbors/n_" + filepath.Base(path)
+          return os.Rename(path, dest)
+        }
+        return nil
+      })
+  }
+  os.RemoveAll(safe + "/genomes/neighbors/tmp_unzip")
+  logMsg(cfg, "  All genome downloads complete")
+#+end_src
+#+begin_export latex
+\subsection*{Step 3: Phylogenetic Tree}
+We compute a pairwise distance matrix with 	exttt{phylonium} across all
+target and neighbor genomes. Because 	exttt{phylonium} writes its output
+to standard output but also emits warnings to standard error, we
+redirect standard output directly to 	exttt{tree.dist} and ignore the
+exit status. The distance matrix is then passed through 	exttt{nj} to
+construct a neighbor-joining tree, rooted by 	exttt{midRoot}, and
+annotated by 	exttt{land}. Accession labels are cleaned with a regular
+expression to retain only the 	exttt{GCA}/	exttt{GCF} accession number.
+The final tree is visualised with 	exttt{plotTree}.
+#+end_export
+#+begin_src go <<Step 3: Phylogenetic tree, Pr. 
+ef{pr:pri}>>=
+  targetFnas, err := filepath.Glob(safe + "/genomes/targets/*.fna")
+  if err != nil {
+    return err
+  }
+  neighborFnas, err := filepath.Glob(safe + "/genomes/neighbors/*.fna")
+  if err != nil {
+    return err
+  }
+  allFnas := append(targetFnas, neighborFnas...)
+  distFile, err := os.Create(safe + "/phylogeny/tree.dist")
+  if err != nil {
+    return err
+  }
+  var phyStderr strings.Builder
+  cmd := exec.Command("phylonium", allFnas...)
+  cmd.Stdout = distFile
+  cmd.Stderr = &phyStderr
+  cmd.Run()
+  distFile.Close()
+  logMsg(cfg, "  phylonium complete")
+  njOut, err := runCmd("", "nj", safe+"/phylogeny/tree.dist")
+  if err != nil {
+    return err
+  }
+  rootOut, err := runCmd(njOut, "midRoot")
+  if err != nil {
+    return err
+  }
+  landOut, err := runCmd(rootOut, "land")
+  if err != nil {
+    return err
+  }
+  err = os.WriteFile(safe+"/phylogeny/tree.nwk", []byte(landOut), 0644)
+  if err != nil {
+    return err
+  }
+  treeNwk, err := os.ReadFile(safe + "/phylogeny/tree.nwk")
+  if err != nil {
+    return err
+  }
+  step1 := strings.ReplaceAll(string(treeNwk), "'", "''")
+  re := regexp.MustCompile(`(GC[AF]_[0-9]+\.[0-9]+)[^']*`)
+  step2 := re.ReplaceAllString(step1, "$1")
+  err = os.WriteFile(safe+"/phylogeny/tree_clean.nwk", []byte(step2), 0644)
+  if err != nil {
+    return err
+  }
+  _, err = runCmd("", "plotTree", safe+"/phylogeny/tree_clean.nwk")
+  if err != nil {
+    return err
+  }
+  logMsg(cfg, "  Tree construction complete")
+#+end_src
+#+begin_export latex
+\subsection*{Step 4: Unique Region Discovery}
+	exttt{makeFurDb} builds a database from the target and neighbor genome
+directories. 	exttt{fur} then identifies sequences present in all targets
+but absent from all neighbors. The output is cleaned with 	exttt{cleanSeq}
+and written to 	exttt{fur/URs.fasta}. A summary of the unique regions is
+produced by 	exttt{cres} and written to 	exttt{fur/summary.txt}.
+#+end_export
+#+begin_src go <<Step 4: FUR marker discovery, Pr. 
+ef{pr:pri}>>=
+  _, err := runCmd("", "makeFurDb",
+    "-t", safe+"/genomes/targets",
+    "-n", safe+"/genomes/neighbors",
+    "-d", safe+"/fur/fur.db")
+  if err != nil {
+    return err
+  }
+  furOut, err := runCmd("", "fur", "-d", safe+"/fur/fur.db")
+  if err != nil {
+    return err
+  }
+  furFasta, err := runCmd(furOut, "cleanSeq")
+  if err != nil {
+    return err
+  }
+  cresOut, err := runCmd(furFasta, "cres")
+  if err != nil {
+    return err
+  }
+  err = os.WriteFile(safe+"/fur/URs.fasta", []byte(furFasta), 0644)
+  if err != nil {
+    return err
+  }
+  err = os.WriteFile(safe+"/fur/summary.txt", []byte(cresOut), 0644)
+  if err != nil {
+    return err
+  }
+  logMsg(cfg, "  fur analysis completed")
+#+end_src
+#+begin_export latex
+\subsection*{Step 5: Primer Design}
+	exttt{fa2prim} converts the unique regions to primer3 input format.
+	exttt{primer3\_core} designs candidate primers, and 	exttt{prim2tab}
+reformats the output into a tab-separated table with columns for
+penalty, forward sequence, reverse sequence, and internal oligo.
+We parse this table, sort the rows by penalty in ascending order
+using an insertion sort, and write all pairs with penalty $\leq 1$
+to 	exttt{primers/primers.fasta}. The best pair (lowest penalty) is
+written separately to 	exttt{primers/best\_primers.fasta} for use in
+the specificity test.
+#+end_export
+#+begin_src go <<Step 5: Primer design, Pr. 
+ef{pr:pri}>>=
+  fa2primOut, err := runCmd("", "fa2prim", safe+"/fur/URs.fasta")
+  if err != nil {
+    return err
+  }
+  prim3Out, err := runCmd(fa2primOut, "primer3_core")
+  if err != nil {
+    return err
+  }
+  prim2tabOut, err := runCmd(prim3Out, "prim2tab")
+  if err != nil {
+    return err
+  }
+  type primerRow struct {
+    penalty float64
+    forward string
+    reverse string
+  }
+  var rows []primerRow
+  for _, line := range strings.Split(prim2tabOut, "
+") {
+    if line == "" || strings.HasPrefix(line, "#") {
+      continue
+    }
+    fields := strings.Fields(line)
+    if len(fields) < 3 {
+      continue
+    }
+    var p float64
+    fmt.Sscanf(fields[0], "%f", &p)
+    rows = append(rows, primerRow{p, fields[1], fields[2]})
+  }
+  if len(rows) == 0 {
+    logMsg(cfg, "  No primers found for "+target)
+    return nil
+  }
+  for i := 1; i < len(rows); i++ {
+    for j := i; j > 0 && rows[j].penalty < rows[j-1].penalty; j-- {
+      rows[j], rows[j-1] = rows[j-1], rows[j]
+    }
+  }
+  var fastaLines []string
+  for _, r := range rows {
+    if r.penalty > 1.0 {
+      break
+    }
+    fastaLines = append(fastaLines,
+      fmt.Sprintf(">f penalty: %f", r.penalty),
+      r.forward,
+      ">r",
+      r.reverse,
+    )
+  }
+  err = os.WriteFile(safe+"/primers/primers.fasta",
+    []byte(strings.Join(fastaLines, "
+")+"
+"), 0644)
+  if err != nil {
+    return err
+  }
+  best := rows[0]
+  bestFasta := fmt.Sprintf(">f penalty: %f
+%s
+>r
+%s
+",
+    best.penalty, best.forward, best.reverse)
+  err = os.WriteFile(safe+"/primers/best_primers.fasta",
+    []byte(bestFasta), 0644)
+  if err != nil {
+    return err
+  }
+  logMsg(cfg, "  primer3 complete")
+#+end_src
+#+begin_export latex
+\subsection*{Step 6: \emph{In Silico} Specificity Test}
+	exttt{scop} scores the best primer pair against a BLAST nucleotide
+database, using the taxon IDs in 	exttt{taxids.txt} to define true
+positives. It reports sensitivity, specificity, and lists of true
+positives, false positives, and false negatives. The output is
+written to 	exttt{primers/scop.out}.
+#+end_export
+#+begin_src go <<Step 6: In silico specificity test, Pr. 
+ef{pr:pri}>>=
+  scopOut, err := runCmd("", "scop",
+    "-d", cfg.scopDB,
+    "-t", safe+"/taxids.txt",
+    safe+"/primers/best_primers.fasta")
+  if err != nil {
+    return err
+  }
+  err = os.WriteFile(safe+"/primers/scop.out", []byte(scopOut), 0644)
+  if err != nil {
+    return err
+  }
+  logMsg(cfg, "  scop complete")
+#+end_src

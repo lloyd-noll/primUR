@@ -1,0 +1,23 @@
+# Compiled binary
+primUR
+
+# Go build cache
+*.test
+
+# Output directories (created by the pipeline)
+*/
+!primUR/
+
+# Log files
+logs/
+
+# LaTeX intermediate files
+primUR.nw
+primURDoc.aux
+primURDoc.log
+primURDoc.dvi
+primURDoc.ps
+primURDoc.pdf
+
+# macOS
+.DS_Store
