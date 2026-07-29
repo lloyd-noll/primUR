@@ -38,7 +38,7 @@ The target group name must match a taxon recognized by `taxi`. The `neidb` path 
 **Example:**
 
 ```bash
-makeScopDb "Ustilago hordei" ~/Thesis/Data/DBs/neidb
+makeScopDb "Ustilago hordei" ~/Data/DBs/neidb
 ```
 
 This creates the following files in the current working directory:
