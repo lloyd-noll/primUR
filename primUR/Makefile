@@ -95,6 +95,7 @@ install: install-evolbioinf install-phylonium install-primer3 install-datasets
 # --- Install binary ------------------------------------------------------
 
 install-bin: $(BIN)
+	mkdir -p $(PREFIX)
 	cp $(BIN) $(PREFIX)/
 	@echo "primUR installed to $(PREFIX)/primUR"
 	@echo "Make sure $(PREFIX) is in your PATH."
